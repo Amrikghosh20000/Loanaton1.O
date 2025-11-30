@@ -29,6 +29,7 @@ function App() {
         Click on the Vite and React logos to learn more
       </p>
       <h1>This is amrik first ever deplopyment</h1>
+      <h1>Made the updated deployemnt</h1>
     </>
   )
 }
