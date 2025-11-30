@@ -1,0 +1,75 @@
+name: Build and Deploy to S3 + CloudFront
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max_old_space_size=4096
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ secrets.NODE_VERSION || '18' }}
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      - name: Build
+        run: |
+          npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Determine build folder
+        id: buildfolder
+        run: |
+          if [ -d "dist" ]; then
+            echo "folder=dist" >> $GITHUB_OUTPUT
+          elif [ -d "build" ]; then
+            echo "folder=build" >> $GITHUB_OUTPUT
+          else
+            echo "No build output directory found (dist/ or build/)" >&2
+            exit 1
+          fi
+
+      - name: Sync files to S3 (and set cache headers)
+        run: |
+          set -e
+          BUCKET=${{ secrets.S3_BUCKET }}
+          FOLDER=${{ steps.buildfolder.outputs.folder }}
+
+          # Upload everything, public-read so website is accessible
+          aws s3 sync $FOLDER s3://$BUCKET --delete --acl public-read
+
+          # Ensure index.html is not cached by browser
+          if aws s3 ls s3://$BUCKET/index.html > /dev/null 2>&1; then
+            aws s3 cp $FOLDER/index.html s3://$BUCKET/index.html --acl public-read --cache-control "no-cache, no-store, must-revalidate, max-age=0"
+          fi
+
+          # Give long cache for common static asset types (assumes hashed filenames)
+          for ext in js css png jpg jpeg svg webp ico map json; do
+            aws s3 sync $FOLDER s3://$BUCKET --exclude "*" --include "*.${ext}" --acl public-read --cache-control "public, max-age=31536000, immutable" || true
+          done
+
+      - name: Create CloudFront invalidation
+        if: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID != '' }}
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
